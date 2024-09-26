@@ -1,0 +1,205 @@
+import os
+import torch
+import numpy as np
+import csv
+from torchvision import transforms, datasets
+import matplotlib.pyplot as plt
+from sklearn.model_selection import StratifiedKFold
+from PIL import Image
+from torch.utils.tensorboard import SummaryWriter
+from tqdm import tqdm
+from prettytable import PrettyTable
+import torch.optim as optim
+
+# Importing model and utility functions from your existing code structure
+from my_dataset import MyDataSet
+from vit_model import vit_large_patch32_224_in21k as create_model
+from utils import read_split_data, train_one_epoch, evaluate
+from utils_gradcam import GradCAM, show_cam_on_image, center_crop_img
+
+# Unified class for handling confusion matrix generation
+class ConfusionMatrix(object):
+    def __init__(self, num_classes: int, labels: list):
+        self.matrix = np.zeros((num_classes, num_classes))
+        self.num_classes = num_classes
+        self.labels = labels
+
+    def update(self, preds, labels):
+        for p, t in zip(preds, labels):
+            self.matrix[p, t] += 1
+
+    def summary(self):
+        sum_TP = 0
+        for i in range(self.num_classes):
+            sum_TP += self.matrix[i, i]
+        acc = sum_TP / np.sum(self.matrix)
+        print("Model accuracy: ", acc)
+
+        table = PrettyTable()
+        table.field_names = ["", "Precision", "Recall", "Specificity"]
+        for i in range(self.num_classes):
+            TP = self.matrix[i, i]
+            FP = np.sum(self.matrix[i, :]) - TP
+            FN = np.sum(self.matrix[:, i]) - TP
+            TN = np.sum(self.matrix) - TP - FP - FN
+            Precision = round(TP / (TP + FP), 3) if TP + FP != 0 else 0.
+            Recall = round(TP / (TP + FN), 3) if TP + FN != 0 else 0.
+            Specificity = round(TN / (TN + FP), 3) if TN + FP != 0 else 0.
+            table.add_row([self.labels[i], Precision, Recall, Specificity])
+        print(table)
+
+    def plot(self):
+        matrix = self.matrix
+        plt.imshow(matrix, cmap=plt.cm.Blues)
+        plt.xticks(range(self.num_classes), self.labels, rotation=45)
+        plt.yticks(range(self.num_classes), self.labels)
+        plt.colorbar()
+        plt.xlabel('True Labels')
+        plt.ylabel('Predicted Labels')
+        plt.title('Confusion Matrix')
+
+        thresh = matrix.max() / 2
+        for x in range(self.num_classes):
+            for y in range(self.num_classes):
+                info = int(matrix[y, x])
+                plt.text(x, y, info, verticalalignment='center', horizontalalignment='center',
+                         color="white" if info > thresh else "black")
+        plt.tight_layout()
+        plt.show()
+
+# Main workflow integrating training, Grad-CAM visualization, and confusion matrix generation
+def main(args):
+    device = torch.device(args.device if torch.cuda.is_available() else "cpu")
+    
+    # Training
+    if args.train:
+        print("Starting training...")
+        tb_writer = SummaryWriter()
+        acc_list, train_acc_list, loss1_list, loss2_list = [], [], [], []
+        train_images_path, train_images_label, _, _ = read_split_data(args.data_path)
+
+        data_transform = {
+            "train": transforms.Compose([transforms.Resize(224),
+                                         transforms.ToTensor(),
+                                         transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])]),
+            "val": transforms.Compose([transforms.Resize(224),
+                                       transforms.ToTensor(),
+                                       transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])])
+        }
+
+        skf = StratifiedKFold(n_splits=args.k_folds, shuffle=True, random_state=args.random_seed)
+        fold = 1
+
+        for train_idx, val_idx in skf.split(train_images_path, train_images_label):
+            train_images_fold = [train_images_path[i] for i in train_idx]
+            train_labels_fold = [train_images_label[i] for i in train_idx]
+            val_images_fold = [train_images_path[i] for i in val_idx]
+            val_labels_fold = [train_images_label[i] for i in val_idx]
+
+            train_dataset = MyDataSet(images_path=train_images_fold,
+                                      images_class=train_labels_fold,
+                                      transform=data_transform["train"])
+            val_dataset = MyDataSet(images_path=val_images_fold,
+                                    images_class=val_labels_fold,
+                                    transform=data_transform["val"])
+
+            train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True,
+                                                       pin_memory=True, num_workers=4, collate_fn=train_dataset.collate_fn)
+            val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False,
+                                                     pin_memory=True, num_workers=4, collate_fn=val_dataset.collate_fn)
+
+            model = create_model(num_classes=args.num_classes).to(device)
+            optimizer = optim.Adam([p for p in model.parameters() if p.requires_grad], lr=args.lr)
+
+            for epoch in range(args.epochs):
+                print(f"Epoch {epoch + 1}/{args.epochs} (Fold {fold})")
+                train_loss, train_acc = train_one_epoch(model, optimizer, train_loader, device, epoch)
+                val_loss, val_acc = evaluate(model, val_loader, device, epoch)
+
+                tb_writer.add_scalar("train_loss", train_loss, epoch)
+                tb_writer.add_scalar("val_loss", val_loss, epoch)
+                tb_writer.add_scalar("train_acc", train_acc, epoch)
+                tb_writer.add_scalar("val_acc", val_acc, epoch)
+                tb_writer.add_scalar("learning_rate", optimizer.param_groups[0]["lr"], epoch)
+
+                loss1_list.append(train_loss)
+                loss2_list.append(val_loss)
+                train_acc_list.append(train_acc)
+                acc_list.append(val_acc)
+
+            fold += 1
+            torch.save(model.state_dict(), args.weights)  # Save the model after training
+
+        tb_writer.close()
+
+    # Grad-CAM Visualization
+    if args.visualize:
+        print("Generating Grad-CAM visualizations...")
+        img_path_list = [os.path.join(args.gradcam_input_dir, i) for i in os.listdir(args.gradcam_input_dir) if i.endswith(".jpg")]
+
+        model.load_state_dict(torch.load(args.weights, map_location=device))
+        model.eval()
+        target_layers = [model.blocks[-2].norm2]
+        data_transform = transforms.Compose([transforms.ToTensor(),
+                                             transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])])
+
+        for img_path in img_path_list:
+            img = Image.open(img_path).convert('RGB')
+            img = np.array(img, dtype=np.uint8)
+            img = center_crop_img(img, 224)
+            img_tensor = data_transform(img).unsqueeze(0)
+
+            cam = GradCAM(model=model, target_layers=target_layers, use_cuda=False)
+            grayscale_cam = cam(input_tensor=img_tensor)[0, :]
+            visualization = show_cam_on_image(img / 255., grayscale_cam, use_rgb=True)
+
+            plt.axis('off')
+            plt.imshow(visualization)
+            output_path = os.path.join(args.gradcam_output_dir, os.path.basename(img_path).replace(".jpg", "_gradcam.jpg"))
+            plt.savefig(output_path, bbox_inches='tight', pad_inches=0)
+            plt.close()
+
+    # Confusion Matrix Generation
+    if args.generate_confusion_matrix:
+        print("Generating Confusion Matrix...")
+        test_dataset = datasets.ImageFolder(root=args.confusion_matrix_data_path, transform=data_transform)
+        test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4)
+
+        model.load_state_dict(torch.load(args.weights, map_location=device))
+        model.to(device)
+        model.eval()
+
+        labels = [str(i) for i in range(args.num_classes)]
+        confusion = ConfusionMatrix(num_classes=args.num_classes, labels=labels)
+
+        with torch.no_grad():
+            for test_images, test_labels in tqdm(test_loader):
+                outputs = model(test_images.to(device))
+                outputs = torch.softmax(outputs, dim=1)
+                outputs = torch.argmax(outputs, dim=1)
+                confusion.update(outputs.cpu().numpy(), test_labels.cpu().numpy())
+
+        confusion.plot()
+        confusion.summary()
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    # General parameters
+    parser.add_argument('--train', action='store_true', help='Train the model')
+    parser.add_argument('--visualize', action='store_true', help='Generate Grad-CAM visualizations')
+    parser.add_argument('--generate_confusion_matrix', action='store_true', help='Generate Confusion Matrix')
+    parser.add_argument('--num_classes', type=int, default=6, help='Number of classes')
+    parser.add_argument('--epochs', type=int, default=30, help='Training epochs')
+    parser.add_argument('--batch-size', type=int, default=32, help='Batch size')
+    parser.add_argument('--lr', type=float, default=0.0001, help='Learning rate')
+    parser.add_argument('--k_folds', type=int, default=5, help='Number of K-Folds')
+    parser.add_argument('--data_path', type=str, default='./data/train', help='Path to training data')
+    parser.add_argument('--gradcam_input_dir', type=str, default='./data/gradcam', help='Path to Grad-CAM input images')
+    parser.add_argument('--gradcam_output_dir', type=str, default='./data/gradcam_out', help='Path to save Grad-CAM output images')
+    parser.add_argument('--confusion_matrix_data_path', type=str, default='./data/test', help='Path to test data for confusion matrix')
+    parser.add_argument('--weights', type=str, default='./weights/model-final.pth', help='Path to save/load model weights')
+    parser.add_argument('--device', type=str, default='cuda:0', help='Device to use for training/testing')
+    parser.add_argument('--random_seed', type=int, default=42, help='Random seed for reproducibility')
+
+    args = parser.parse_args()
+    main(args)

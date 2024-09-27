@@ -1,6 +1,8 @@
 SHM-seismic-events-detection-with-bayesian-fusion
 =====
 
+![PyTorch](https://img.shields.io/badge/PyTorch-red.svg)
+
 Project Overview
 --
 This repository hosts the implementation of automated seismic event detection under faulty data interference for structural health monitoring. The system primarily utilizes deep learning models to classify data types within each sensor channel. Subsequently, the multi-channel results are then integrated by a Bayesian fusion algorithm, achieving

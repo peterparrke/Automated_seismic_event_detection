@@ -1,4 +1,4 @@
-SHM-seismic-events-detection-with-bayesian-fusion
+Automated seismic event detection using deep learning and Bayesian fusion
 =====
 
 ![PyTorch](https://img.shields.io/badge/PyTorch-red.svg)

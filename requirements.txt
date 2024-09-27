@@ -1,0 +1,11 @@
+torch
+torchvision
+numpy
+tqdm
+matplotlib
+prettytable
+scikit-learn
+pytorch-grad-cam
+Pillow
+tensorboard
+pandas

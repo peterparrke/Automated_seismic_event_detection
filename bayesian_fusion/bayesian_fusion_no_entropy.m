@@ -1,4 +1,4 @@
-function [new_prediction,event_estimate,P_sen_like]=max_entropy_bayesian(data_bi)
+function [new_prediction,event_estimate,P_sen_like,errorlist]=bayesian_fusion_no_entropy(data_bi)
 [N_sen,N_t]=size(data_bi);
 
 event_mean=mean(data_bi);
@@ -30,7 +30,7 @@ event_estimate(pos_is_event)=1;
 
 for j=1:N_sen
     
-    P_sen_like(j,1)=1 /N_t/2+sum(data_bi(j,pos_is_event))/sum(event_estimate);
+    P_sen_like(j,1)=1/N_t/2+sum(data_bi(j,pos_is_event))/sum(event_estimate);
     
     P_sen_like(j,2)=1/N_t+1-P_sen_like(j,1);
     
@@ -50,7 +50,7 @@ P_sen_like_all_1=ones(N_sen,N_t);
 
 P_sen_like_all_0=ones(N_sen,N_t);
 
-H_new=0;
+
 for j=1:N_t
     
     for k=1:N_sen
@@ -65,10 +65,6 @@ for j=1:N_t
         (prod(P_sen_like_all_1(:,j))*P_z1+prod(P_sen_like_all_0(:,j))*P_z0);
     P_z0_con_Y(j)=1-P_z1_con_Y(j);
     
-    H_new=H_new+prod(P_sen_like_all_1(:,j))*P_z1*log(prod(P_sen_like_all_1(:,j))*P_z1/...
-        (prod(P_sen_like_all_1(:,j))*P_z1+prod(P_sen_like_all_0(:,j))*P_z0));
-    H_new=H_new+prod(P_sen_like_all_0(:,j))*P_z0*log(prod(P_sen_like_all_0(:,j))*P_z0/...
-        (prod(P_sen_like_all_1(:,j))*P_z1+prod(P_sen_like_all_0(:,j))*P_z0));% entropy
     
 end
 
@@ -84,10 +80,14 @@ end
 flag=1;
 cnt=0;
 
-d_H=1;
+N_iter=8;
+
+errorlist=ones(1,5);
 
 
 while flag
+
+    P_z1_con_Y_old=P_z1_con_Y;
 
     event_estimate=round(P_z1_con_Y);
     
@@ -122,9 +122,7 @@ while flag
 
     P_sen_like_all_0=ones(N_sen,N_t);
     
-    H_old=H_new;
 
-    H_new=0;
     for j=1:N_t
 
         for k=1:N_sen
@@ -139,22 +137,15 @@ while flag
             (prod(P_sen_like_all_1(:,j))*P_z1+prod(P_sen_like_all_0(:,j))*P_z0);
         P_z0_con_Y(j)=1-P_z1_con_Y(j);
         
-        H_new=H_new+prod(P_sen_like_all_1(:,j))*P_z1*log(prod(P_sen_like_all_1(:,j))*P_z1/...
-            (prod(P_sen_like_all_1(:,j))*P_z1+prod(P_sen_like_all_0(:,j))*P_z0));
-        H_new=H_new+prod(P_sen_like_all_0(:,j))*P_z0*log(prod(P_sen_like_all_0(:,j))*P_z0/...
-            (prod(P_sen_like_all_1(:,j))*P_z1+prod(P_sen_like_all_0(:,j))*P_z0));% entropy
 
     end
-    
-    d_H_old=d_H;
-    
-    d_H=H_new-H_old;
-    
-    
+
     
     cnt=cnt+1;
+
+    errorlist(cnt)=sqrt(sum((P_z1_con_Y_old-P_z1_con_Y).^2)/sum(P_z1_con_Y_old.^2));
     
-    if cnt>=20 || d_H_old*d_H<=0
+    if cnt>=N_iter
         flag=0;
     end
     

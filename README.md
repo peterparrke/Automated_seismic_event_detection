@@ -1,1 +1,16 @@
-This repository is the implementation of automated seismic events detection under faulty data interference of structural health monitoring. Packages dependencies are listed in `requirements.txt`. This program primarily comprises two components: the training of deep learning models and Bayesian data fusion. Owing to confidentiality protocols, the original datasets from the Structural Health Monitoring (SHM) system of the bridge have been omitted. Nonetheless, the dataset containing manually labeled for four seismic events, coupled with the corresponding outcomes derived from neural network analyses, is available in the `bayesian_fusion` directory. To initiate the data fusion processes, the `predict_using_previous_likeli.m` script, situated within the bayesian_fusion directory, should be executed.
+SHM-seismic-events-detection-with-bayesian-fusion
+=====
+
+Project Overview
+--
+This repository hosts the implementation of automated seismic event detection under faulty data interference for structural health monitoring. The system primarily utilizes deep learning models to classify data types within each sensor channel. Subsequently, the multi-channel results are then integrated by a Bayesian fusion algorithm, achieving
+automated and consistent seismic event detection.
+
+Data and Dependencies
+--
+**Data Confidentiality:** Due to strict confidentiality agreements, this repository does not include original datasets from the bridge's Structural Health Monitoring (SHM) system.
+
+**Included Data:** This repository contains detection results from deep learning models and manual labels for four seismic events. Each event is represented by a 70x248 matrix, where 70 denotes the number of sensor channels, and 248 represents the time-frequency (T-F) plots generated per channel per hour. Each matrix element corresponds to the data type at that specific time. Those data are located in the `bayesian_fusion` directory and are readily usable as inputs for Bayesian fusion algorithms `predict_using_previous_likeli.m`.
+
+**Dependencies:** All package dependencies required for running the program are listed in the `requirements.txt` file.
+
